@@ -1,0 +1,295 @@
+version: '3.8'
+
+services:
+  wazuh.manager:
+    image: wazuh/wazuh-manager:${WAZUH_VERSION:-4.8.0}
+    hostname: wazuh.manager
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "514:514/udp"
+      - "55000:55000"
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD:-DefensePoint2024!Indexer}
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=${WAZUH_API_PASSWORD:-DefensePoint2024!API}
+      - WAZUH_CLUSTER_NODE_NAME=wazuh-manager-01
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      # SSL Certificate mounts - using absolute paths to prevent directory creation
+      - ./config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key:ro
+      - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:55000 | grep -q 200 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+    networks:
+      wazuh:
+        ipv4_address: 172.20.0.3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:${WAZUH_VERSION:-4.8.0}
+    hostname: wazuh.indexer
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms${WAZUH_INDEXER_HEAP_SIZE:-2g} -Xmx${WAZUH_INDEXER_HEAP_SIZE:-2g}"
+      - "bootstrap.memory_lock=true"
+      - "discovery.type=single-node"
+      - "network.host=0.0.0.0"
+      - "cluster.name=wazuh-cluster"
+      - "node.name=wazuh.indexer"
+      # SSL Transport layer configuration
+      - "plugins.security.ssl.transport.pemcert_filepath=esnode.pem"
+      - "plugins.security.ssl.transport.pemkey_filepath=esnode-key.pem"
+      - "plugins.security.ssl.transport.pemtrustedcas_filepath=root-ca.pem"
+      - "plugins.security.ssl.transport.enforce_hostname_verification=false"
+      # SSL HTTP layer configuration
+      - "plugins.security.ssl.http.enabled=true"
+      - "plugins.security.ssl.http.pemcert_filepath=esnode.pem"
+      - "plugins.security.ssl.http.pemkey_filepath=esnode-key.pem"
+      - "plugins.security.ssl.http.pemtrustedcas_filepath=root-ca.pem"
+      # Security plugin configuration
+      - "plugins.security.allow_default_init_securityindex=true"
+      - "plugins.security.authcz.admin_dn=CN=admin,OU=Wazuh,O=Wazuh,L=California,C=US"
+      - "plugins.security.audit.type=internal_opensearch"
+      - "plugins.security.enable_snapshot_restore_privilege=true"
+      - "plugins.security.check_snapshot_restore_write_privileges=true"
+      - "plugins.security.restapi.roles_enabled=[\"all_access\",\"security_rest_api_access\"]"
+      - "plugins.security.system_indices.enabled=true"
+      - "plugins.security.system_indices.indices=[\".opendistro-alerting-config\",\".opendistro-alerting-alert*\",\".opendistro-anomaly-results*\",\".opendistro-anomaly-detector*\",\".opendistro-anomaly-checkpoints\",\".opendistro-anomaly-detection-state\",\".opendistro-reports-*\",\".opendistro-notifications-*\",\".opendistro-notebooks\",\".opendistro-asynchronous-search-response*\"]"
+      # Performance tuning
+      - "indices.query.bool.max_clause_count=8192"
+      - "search.max_buckets=250000"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      # Certificate mounts - using proper absolute paths
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/certs/root-ca.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/certs/esnode-key.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/certs/esnode.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/certs/admin.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/certs/admin-key.pem:ro
+      # Data and configuration volumes
+      - wazuh_indexer_data:/usr/share/wazuh-indexer/data
+      - ./config/wazuh_indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+      - ./wazuh-repo/single-node/config/wazuh_indexer/opensearch-security/:/usr/share/wazuh-indexer/plugins/opensearch-security/securityconfig/:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -XGET https://localhost:9200 -u admin:${WAZUH_INDEXER_PASSWORD:-DefensePoint2024!Indexer} -k --max-time 120 --connect-timeout 5 --retry 3 || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    networks:
+      wazuh:
+        ipv4_address: 172.20.0.2
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:${WAZUH_VERSION:-4.8.0}
+    hostname: wazuh.dashboard
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD:-DefensePoint2024!Indexer}
+      - WAZUH_API_URL=https://wazuh.manager
+      - DASHBOARD_USERNAME=kibanaserver
+      - DASHBOARD_PASSWORD=${WAZUH_DASHBOARD_PASSWORD:-DefensePoint2024!Dashboard}
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=${WAZUH_API_PASSWORD:-DefensePoint2024!API}
+      - OPENSEARCH_HOSTS=["https://wazuh.indexer:9200"]
+    volumes:
+      # SSL Certificate mounts
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+      # Configuration volumes
+      - ./config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      - ./config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
+      - wazuh_dashboard_config:/usr/share/wazuh-dashboard/data/wazuh/config
+      - wazuh_dashboard_custom:/usr/share/wazuh-dashboard/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/app/wazuh --max-time 30 --connect-timeout 5 --retry 3 || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 180s
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+      wazuh.manager:
+        condition: service_healthy
+    networks:
+      wazuh:
+        ipv4_address: 172.20.0.4
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Nginx proxy to route ALB traffic to Wazuh dashboard
+  nginx-proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      wazuh.dashboard:
+        condition: service_healthy
+    networks:
+      - wazuh
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  wazuh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  wazuh_api_configuration:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_api_configuration
+  wazuh_etc:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_etc
+  wazuh_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_logs
+  wazuh_queue:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_queue
+  wazuh_var_multigroups:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_var_multigroups
+  wazuh_integrations:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_integrations
+  wazuh_active_response:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_active_response
+  wazuh_agentless:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_agentless
+  wazuh_wodles:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_wodles
+  filebeat_etc:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/filebeat_etc
+  filebeat_var:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/filebeat_var
+  wazuh_indexer_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${INDEXER_DATA_PATH:-./data/wazuh-indexer-data}
+  wazuh_dashboard_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_dashboard_config
+  wazuh_dashboard_custom:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAZUH_DATA_PATH:-./data}/wazuh_dashboard_custom
