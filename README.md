@@ -59,6 +59,44 @@ wazuh-defensepoint/
 - Terraform >= 1.0 installed
 - Access to deploy VPC, EC2, ALB, IAM resources
 
+### **Deployment Steps**
+
+#### **1. Navigate to Terraform Directory**
+```bash
+cd assessment/terraform/
+```
+
+#### **2. Configure Variables**
+Edit `terraform.tfvars` to match your environment:
+```hcl
+instance_type = "t3.large"
+region        = "ap-south-1"
+project_name  = "wazuh-defensepoint"
+```
+
+#### **3. Initialize Terraform**
+```bash
+terraform init
+```
+
+#### **4. Review Infrastructure Plan**
+```bash
+terraform plan
+```
+
+#### **5. Deploy Infrastructure**
+```bash
+terraform apply
+```
+
+#### **6. Access Deployment**
+After successful deployment, get the ALB DNS name:
+```bash
+terraform output alb_dns_name
+```
+
+Access your Wazuh SIEM at: `http://<alb_dns_name>`
+
 ### **Infrastructure Components**
 
 #### **VPC and Networking**
